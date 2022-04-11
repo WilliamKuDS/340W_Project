@@ -11,6 +11,8 @@ from keras.layers import LSTM
 from math import sqrt
 from matplotlib import pyplot
 from numpy import array
+from keras_tuner.tuners import RandomSearch
+import numpy as np
 
 # Credit: https://machinelearningmastery.com/multi-step-time-series-forecasting-long-short-term-memory-networks-python/
 
@@ -154,35 +156,52 @@ def plot_forecasts(series, forecasts, n_test):
     pyplot.title("Amazon Closing Prices")
     pyplot.show()
 
+
 if __name__ == '__main__':
     # Load the data
     amazon = read_csv('/Users/william/Downloads/Deep-Learning-Financial-News-Stock-Movement-Prediction-master/stock_data/AMZN_2006-01-01_to_2017-11-01.csv')
     series = amazon['Close'][2000:2600]
 
-    # configure
     n_lag = 5
     n_seq = 5
     n_test = 50
-    n_epochs = 5
-    n_batch = 1
-    n_neurons = 8
+
+    scaler, train, test = prepare_data(series, n_test, n_lag, n_seq)
+    forecasts_list = []
+    actual_list = []
+    batches = [1, 2, 4]
+    epochs = [5, 50, 100, 250]
+    neurons = [1, 2, 3, 4, 5, 6, 7, 8]
+    for e in epochs:
+        for b in batches:
+            for n in neurons:
+                model = fit_lstm(train, n_lag, n_seq, b, e, n)
+                forecasts = make_forecasts(model, b, train, test, n_lag, n_seq)
+                forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
+                forecasts_list.append(forecasts)
+                actual = [row[n_lag:] for row in test]
+                actual = inverse_transform(series, actual, scaler, n_test+2)
+                actual_list.append(actual)
+
+
+
+
 
     # prepare data
-    scaler, train, test = prepare_data(series, n_test, n_lag, n_seq)
 
     # fit model
-    model = fit_lstm(train, n_lag, n_seq, n_batch, n_epochs, n_neurons)
+    #model = fit_lstm(train, n_lag, n_seq, n_batch, n_epochs, n_neurons)
 
     # make forecasts
-    forecasts = make_forecasts(model, n_batch, train, test, n_lag, n_seq)
+    #forecasts = make_forecasts(model, n_batch, train, test, n_lag, n_seq)
 
     # inverse transform forecasts and test
-    forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
-    actual = [row[n_lag:] for row in test]
-    actual = inverse_transform(series, actual, scaler, n_test+2)
+    #forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
+    #actual = [row[n_lag:] for row in test]
+    #actual = inverse_transform(series, actual, scaler, n_test+2)
 
     # evaluate forecasts
-    evaluate_forecasts(actual, forecasts, n_lag, n_seq)
+    evaluate_forecasts(max(actual_list), max(forecasts_list), n_lag, n_seq)
 
     # plot forecasts
-    plot_forecasts(series, forecasts, n_test+2)
+    plot_forecasts(series, max(forecasts_list), n_test+2)
