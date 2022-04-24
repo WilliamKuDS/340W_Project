@@ -1,3 +1,4 @@
+import pandas as pd
 from pandas import DataFrame
 from pandas import Series
 from pandas import concat
@@ -5,13 +6,16 @@ from pandas import read_csv
 from pandas import datetime
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import MinMaxScaler
+#import tensorflow as tf
+#import tensorflow.keras as keras
 from keras.models import Sequential
-from keras.layers import Dense
+from keras.layers import Dense, Dropout
 from keras.layers import LSTM
 from math import sqrt
 from matplotlib import pyplot
 from numpy import array
 from keras_tuner.tuners import RandomSearch
+from tensorflow.keras.callbacks import ModelCheckpoint, History
 import numpy as np
 
 # Credit: https://machinelearningmastery.com/multi-step-time-series-forecasting-long-short-term-memory-networks-python/
@@ -68,20 +72,35 @@ def prepare_data(series, n_test, n_lag, n_seq):
     return scaler, train, test
  
 # fit an LSTM network to training data
-def fit_lstm(train, n_lag, n_seq, n_batch, nb_epoch, n_neurons):
+def fit_lstm(train, n_lag, n_seq, n_batch, nb_epoch, n_neurons, j):
     # reshape training into [samples, timesteps, features]
     X, y = train[:, 0:n_lag], train[:, n_lag:]
     X = X.reshape(X.shape[0], 1, X.shape[1])
     # design network
     model = Sequential()
-    model.add(LSTM(n_neurons, batch_input_shape=(n_batch, X.shape[1], X.shape[2]), stateful=True))
+    model.add(LSTM(n_neurons, return_sequences = True,
+                   batch_input_shape=(n_batch, X.shape[1], X.shape[2]), stateful=True))
+    model.add(Dropout(drop_out)) # added a droppout layer
+    model.add(LSTM(n_neurons,return_sequences = True)) #added lstm layer
+    model.add(LSTM(n_neurons,return_sequences =False))    #added lstm layer
+    model.add(Dropout(drop_out))    # added a dropout layer
     model.add(Dense(y.shape[1]))
     model.compile(loss='mean_squared_error', optimizer='adam')
     # fit network
     for i in range(nb_epoch):
         model.fit(X, y, epochs=1, batch_size=n_batch, verbose=1, shuffle=False)
         model.reset_states()
-    return model
+        
+    # saving best model checkpoint for hyparameter tuning        
+    checkpoint_filepath = '/Users/jessi/Onedrive/Desktop/Sem6/DS340W/Final/src/temp/ckpt%s'%j
+    model_checkpoint_callback = ModelCheckpoint(
+        filepath=checkpoint_filepath,
+        save_weights_only=True,
+        monitor='loss',
+        mode='min',
+        save_best_only=True)
+            
+    return model, checkpoint_filepath, model_checkpoint_callback
  
 # make one forecast with an LSTM,
 def forecast_lstm(model, X, n_batch):
@@ -159,30 +178,60 @@ def plot_forecasts(series, forecasts, n_test):
 
 if __name__ == '__main__':
     # Load the data
-    amazon = read_csv('/Users/william/Downloads/Deep-Learning-Financial-News-Stock-Movement-Prediction-master/stock_data/AMZN_2006-01-01_to_2017-11-01.csv')
+    amazon = read_csv('/Users/jessi/Onedrive/Desktop/Sem6/DS340W/Final/volume/stock_data/AMZN_2006-01-01_to_2017-11-01.csv')
     series = amazon['Close'][2000:2600]
 
     n_lag = 5
     n_seq = 5
     n_test = 50
+    drop_out = 0
 
     scaler, train, test = prepare_data(series, n_test, n_lag, n_seq)
-    forecasts_list = []
-    actual_list = []
-    batches = [1, 2, 4]
-    epochs = [5, 50, 100, 250]
-    neurons = [1, 2, 3, 4, 5, 6, 7, 8]
-    for e in epochs:
-        for b in batches:
-            for n in neurons:
-                model = fit_lstm(train, n_lag, n_seq, b, e, n)
-                forecasts = make_forecasts(model, b, train, test, n_lag, n_seq)
-                forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
-                forecasts_list.append(forecasts)
-                actual = [row[n_lag:] for row in test]
-                actual = inverse_transform(series, actual, scaler, n_test+2)
-                actual_list.append(actual)
+    # forecasts_list = []
+    # actual_list = []
+    results = []
+    batches = 1
+    # n_batch = 1
+    # n_epochs = 10
+    # n_neurons = 8
+    epochs = [1, 5, 10, 30] # [5, 50, 100, 250]
+    neurons = [1, 2, 5, 8]
 
+    X, y = train[:, 0:n_lag], train[:, n_lag:]
+    X = X.reshape(X.shape[0], 1, X.shape[1])
+    j = 0
+    
+    # implemented for loop for hyperparameter tuning
+    for e in epochs:
+        for n in neurons:
+            # getting model and chekcpoints 
+            model, checkpoint_filepath, model_checkpoint_callback = fit_lstm(train, n_lag, n_seq, batches, e, n, j)
+            j += 1
+            # refitiing model with best checkpoint
+            history = model.fit(X, y, epochs=e, callbacks=[model_checkpoint_callback])
+            model.load_weights(checkpoint_filepath)
+            weights =  model.get_weights()
+            loss = history.history['loss']
+
+            forecasts = make_forecasts(model, batches, train, test, n_lag, n_seq)
+            forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
+            # forecasts_list.append(forecasts)
+            actual = [row[n_lag:] for row in test]
+            actual = inverse_transform(series, actual, scaler, n_test+2)
+            # actual_list.append(actual)
+
+            # saving the best parameters
+            results.append({'Loss': loss,
+                            'Weights': weights,
+                            # 'Batches': b,
+                            'Epoch': e,
+                            'Neurons': n,
+                            'Forecast': forecasts,
+                            'Actual': actual})
+
+    results = pd.DataFrame(results)
+    # results = results.sort_values(by='Loss', ascending=False)
+    results.to_csv('/Users/jessi/Onedrive/Desktop/Sem6/DS340W/Final/volume/results/hp4.csv')
 
 
 
@@ -190,18 +239,18 @@ if __name__ == '__main__':
     # prepare data
 
     # fit model
-    #model = fit_lstm(train, n_lag, n_seq, n_batch, n_epochs, n_neurons)
+    # model = fit_lstm(train, n_lag, n_seq, n_batch, n_epochs, n_neurons)
 
     # make forecasts
-    #forecasts = make_forecasts(model, n_batch, train, test, n_lag, n_seq)
+    # forecasts = make_forecasts(model, n_batch, train, test, n_lag, n_seq)
 
     # inverse transform forecasts and test
-    #forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
-    #actual = [row[n_lag:] for row in test]
-    #actual = inverse_transform(series, actual, scaler, n_test+2)
+    # forecasts = inverse_transform(series, forecasts, scaler, n_test+2)
+    # actual = [row[n_lag:] for row in test]
+    # actual = inverse_transform(series, actual, scaler, n_test+2)
 
     # evaluate forecasts
-    evaluate_forecasts(max(actual_list), max(forecasts_list), n_lag, n_seq)
+    # evaluate_forecasts(actual, forecasts, n_lag, n_seq)
 
     # plot forecasts
-    plot_forecasts(series, max(forecasts_list), n_test+2)
+    # plot_forecasts(series, forecasts, n_test+2)
